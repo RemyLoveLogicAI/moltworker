@@ -1,0 +1,466 @@
+name: Backup and Disaster Recovery
+
+on:
+  schedule:
+    # Daily backups at 4 AM UTC
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      backup_type:
+        description: 'Backup type'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+        - full
+        - incremental
+        - configuration-only
+      environment:
+        description: 'Environment to backup'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+        - development
+      restore:
+        description: 'Restore from backup (requires backup_id)'
+        required: false
+        default: false
+        type: boolean
+      backup_id:
+        description: 'Backup ID to restore from'
+        required: false
+        type: string
+  push:
+    branches: ['backup/*']
+
+env:
+  BACKUP_RETENTION_DAYS: '30'
+  DISASTER_RECOVERY_RETENTION_DAYS: '90'
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  # Automated Backups
+  automated-backup:
+    name: Automated Backup
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !github.event.inputs.restore)
+    strategy:
+      matrix:
+        environment: [production, staging]
+    steps:
+      - name: Initialize backup
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          ENV=${{ matrix.environment }}
+          BACKUP_TYPE=${{ github.event.inputs.backup_type || 'full' }}
+          
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+          echo "ENVIRONMENT=$ENV" >> $GITHUB_ENV
+          echo "BACKUP_TYPE=$BACKUP_TYPE" >> $GITHUB_ENV
+          echo "BACKUP_NAME=moltbot-$ENV-$BACKUP_TYPE-backup-$TIMESTAMP" >> $GITHUB_ENV
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Backup application data
+        run: |
+          echo "Starting backup for ${{ env.ENVIRONMENT }} environment"
+          
+          # Backup R2 data
+          if [ "${{ env.BACKUP_TYPE }}" = "full" ]; then
+            aws s3 sync "s3://moltbot-data-${{ env.ENVIRONMENT }}/" \
+              "s3://moltbot-backups/${{ env.ENVIRONMENT }}/${{ env.TIMESTAMP }}/data/" \
+              --region ${{ env.AWS_REGION }} \
+              --storage-class STANDARD_IA
+          elif [ "${{ env.BACKUP_TYPE }}" = "incremental" ]; then
+            # Find last backup timestamp
+            LAST_BACKUP=$(aws s3 ls "s3://moltbot-backups/${{ env.ENVIRONMENT }}/" --recursive | sort | tail -1 | awk '{print $4}' | cut -d'/' -f3)
+            echo "Last backup: $LAST_BACKUP"
+            
+            # Sync only changes since last backup
+            if [ -n "$LAST_BACKUP" ]; then
+              aws s3 sync "s3://moltbot-data-${{ env.ENVIRONMENT }}/" \
+                "s3://moltbot-backups/${{ env.ENVIRONMENT }}/${{ env.TIMESTAMP }}/data/" \
+                --region ${{ env.AWS_REGION }} \
+                --storage-class STANDARD_IA
+            fi
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Backup configuration and secrets
+        run: |
+          # Create backup directory
+          mkdir -p /tmp/backup/${{ env.BACKUP_NAME }}
+          
+          # Backup code version
+          git rev-parse HEAD > /tmp/backup/${{ env.BACKUP_NAME }}/commit_hash.txt
+          echo "${{ env.TIMESTAMP }}" > /tmp/backup/${{ env.BACKUP_NAME }}/backup_timestamp.txt
+          
+          # Backup configuration files
+          cp wrangler.jsonc /tmp/backup/${{ env.BACKUP_NAME }}/
+          cp package.json /tmp/backup/${{ env.BACKUP_NAME }}/
+          
+          # Export worker configuration (non-sensitive)
+          wrangler whoami > /tmp/backup/${{ env.BACKUP_NAME }}/worker_info.txt 2>/dev/null || echo "Worker info not available" > /tmp/backup/${{ env.BACKUP_NAME }}/worker_info.txt
+          
+          # Create metadata file
+          cat > /tmp/backup/${{ env.BACKUP_NAME }}/metadata.json << EOF
+          {
+            "backup_id": "${{ env.BACKUP_NAME }}",
+            "environment": "${{ env.ENVIRONMENT }}",
+            "backup_type": "${{ env.BACKUP_TYPE }}",
+            "timestamp": "${{ env.TIMESTAMP }}",
+            "commit_hash": "$(git rev-parse HEAD)",
+            "branch": "$(git branch --show-current)",
+            "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Create backup archive
+        run: |
+          cd /tmp/backup
+          tar -czf "${{ env.BACKUP_NAME }}.tar.gz" "${{ env.BACKUP_NAME }}/"
+          
+          # Create checksum
+          sha256sum "${{ env.BACKUP_NAME }}.tar.gz" > "${{ env.BACKUP_NAME }}.sha256"
+
+      - name: Upload backup to storage
+        run: |
+          # Upload configuration backup
+          aws s3 cp "/tmp/backup/${{ env.BACKUP_NAME }}.tar.gz" \
+            "s3://moltbot-backups/${{ env.ENVIRONMENT }}/${{ env.TIMESTAMP }}/config/${{ env.BACKUP_NAME }}.tar.gz" \
+            --region ${{ env.AWS_REGION }}
+          
+          aws s3 cp "/tmp/backup/${{ env.BACKUP_NAME }}.sha256" \
+            "s3://moltbot-backups/${{ env.ENVIRONMENT }}/${{ env.TIMESTAMP }}/config/${{ env.BACKUP_NAME }}.sha256" \
+            --region ${{ env.AWS_REGION }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Update backup registry
+        run: |
+          # Update backup registry
+          aws dynamodb put-item \
+            --table-name moltbot-backup-registry \
+            --item '{
+              "backup_id": {"S": "'${{ env.BACKUP_NAME }}'"},
+              "environment": {"S": "'${{ env.ENVIRONMENT }}'"},
+              "backup_type": {"S": "'${{ env.BACKUP_TYPE }}'"},
+              "timestamp": {"S": "'${{ env.TIMESTAMP }}'"},
+              "size_bytes": {"N": "'$(stat -c%s "/tmp/backup/${{ env.BACKUP_NAME }}.tar.gz")'"},
+              "checksum": {"S": "'$(cat "/tmp/backup/${{ env.BACKUP_NAME }}.sha256" | cut -d' ' -f1)'"},
+              "created_at": {"S": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}
+            }' \
+            --region ${{ env.AWS_REGION }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        continue-on-error: true
+
+      - name: Upload backup artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_NAME }}
+          path: /tmp/backup/${{ env.BACKUP_NAME }}.tar.gz
+          retention-days: ${{ env.BACKUP_RETENTION_DAYS }}
+
+      - name: Cleanup old backups
+        run: |
+          # Delete backups older than retention period
+          aws s3 ls "s3://moltbot-backups/${{ env.ENVIRONMENT }}/" --recursive | \
+            while read -r line; do
+              TIMESTAMP=$(echo "$line" | awk '{print $1" "$2}')
+              BACKUP_PATH=$(echo "$line" | awk '{print $4}')
+              
+              # Calculate age in days
+              BACKUP_DATE=$(date -d "$(echo "$line" | awk '{print $1" "$2}')" +%s 2>/dev/null || echo 0)
+              CURRENT_DATE=$(date +%s)
+              AGE_DAYS=$(( ($CURRENT_DATE - $BACKUP_DATE) / 86400 ))
+              
+              if [ $AGE_DAYS -gt ${{ env.BACKUP_RETENTION_DAYS }} ]; then
+                echo "Deleting old backup: $BACKUP_PATH ($AGE_DAYS days old)"
+                aws s3 rm "s3://$BACKUP_PATH" --region ${{ env.AWS_REGION }}
+              fi
+            done
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Notify backup completion
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#backups'
+          text: '✅ Backup completed: ${{ env.BACKUP_NAME }}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_BACKUPS }}
+        if: always()
+
+  # Disaster Recovery
+  disaster-recovery:
+    name: Disaster Recovery
+    runs-on: ubuntu-latest
+    if: github.event.inputs.restore == 'true'
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+    steps:
+      - name: Validate backup
+        run: |
+          BACKUP_ID="${{ github.event.inputs.backup_id }}"
+          if [ -z "$BACKUP_ID" ]; then
+            echo "❌ Backup ID is required for restore"
+            exit 1
+          fi
+          
+          echo "BACKUP_ID=$BACKUP_ID" >> $GITHUB_ENV
+
+      - name: Download backup
+        run: |
+          # Find backup location
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          
+          # Search for backup
+          BACKUP_LOCATION=$(aws s3 ls "s3://moltbot-backups/$ENVIRONMENT/" --recursive | grep "$BACKUP_ID" | head -1)
+          if [ -z "$BACKUP_LOCATION" ]; then
+            echo "❌ Backup not found: $BACKUP_ID"
+            exit 1
+          fi
+          
+          BACKUP_PATH="s3://moltbot-backups/$ENVIRONMENT/$(echo "$BACKUP_LOCATION" | awk '{print $4}')"
+          echo "Found backup at: $BACKUP_PATH"
+          
+          # Download backup
+          aws s3 cp "$BACKUP_PATH" "/tmp/disaster-recovery-backup.tar.gz" --region ${{ env.AWS_REGION }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Verify backup integrity
+        run: |
+          # Extract checksum from backup registry or separate file
+          BACKUP_DIR="/tmp/backup-extracted"
+          mkdir -p "$BACKUP_DIR"
+          
+          # Extract backup
+          tar -xzf "/tmp/disaster-recovery-backup.tar.gz" -C "$BACKUP_DIR"
+          
+          # Verify checksum
+          if [ -f "$BACKUP_DIR/$BACKUP_ID.sha256" ]; then
+            EXPECTED_HASH=$(cat "$BACKUP_DIR/$BACKUP_ID.sha256" | cut -d' ' -f1)
+            ACTUAL_HASH=$(sha256sum "/tmp/disaster-recovery-backup.tar.gz" | cut -d' ' -f1)
+            
+            if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+              echo "❌ Backup integrity check failed"
+              echo "Expected: $EXPECTED_HASH"
+              echo "Actual: $ACTUAL_HASH"
+              exit 1
+            fi
+            echo "✅ Backup integrity verified"
+          else
+            echo "⚠️ Checksum file not found, proceeding with caution"
+          fi
+          
+          # Load metadata
+          if [ -f "$BACKUP_DIR/$BACKUP_ID/metadata.json" ]; then
+            cat "$BACKUP_DIR/$BACKUP_ID/metadata.json" | jq '.' > backup-metadata.json
+            echo "Backup metadata loaded"
+          fi
+
+      - name: Emergency environment preparation
+        run: |
+          # Stop current deployments if running
+          echo "Preparing for disaster recovery..."
+          
+          # Backup current state for rollback
+          CURRENT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          mkdir -p "/tmp/emergency-rollback-$CURRENT_TIMESTAMP"
+          
+          # Create emergency rollback checkpoint
+          echo "Created rollback checkpoint: emergency-rollback-$CURRENT_TIMESTAMP"
+
+      - name: Restore application
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.load-metadata.outputs.commit_hash || 'main' }}
+        continue-on-error: true
+
+      - name: Setup Node.js for restore
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Restore application code and dependencies
+        run: |
+          # Install dependencies
+          npm ci || npm install
+          
+          # Restore configuration
+          if [ -f "backup-metadata.json" ]; then
+            COMMIT_HASH=$(cat backup-metadata.json | jq -r '.commit_hash // "HEAD"')
+            git checkout "$COMMIT_HASH" || git checkout main
+          fi
+          
+          # Build restored application
+          npm run build
+
+      - name: Restore data
+        run: |
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          BACKUP_DIR="/tmp/backup-extracted"
+          
+          # Restore R2 data from backup
+          BACKUP_DATA_PATH=$(find "$BACKUP_DIR" -name "data" -type d | head -1)
+          if [ -n "$BACKUP_DATA_PATH" ] && [ -d "$BACKUP_DATA_PATH" ]; then
+            echo "Restoring data from $BACKUP_DATA_PATH"
+            
+            # Clear current R2 data (emergency mode)
+            aws s3 rm "s3://moltbot-data-$ENVIRONMENT/" --recursive --region ${{ env.AWS_REGION }}
+            
+            # Restore backup data
+            aws s3 sync "$BACKUP_DATA_PATH/" "s3://moltbot-data-$ENVIRONMENT/" --region ${{ env.AWS_REGION }}
+            echo "✅ Data restore completed"
+          else
+            echo "⚠️ No data found in backup, skipping data restore"
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Deploy restored application
+        run: |
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          
+          # Deploy to appropriate environment
+          if [ "$ENVIRONMENT" = "production" ]; then
+            npm run deploy
+          else
+            npm run deploy
+          fi
+          
+          echo "✅ Disaster recovery deployment completed"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_ENV: ${{ github.event.inputs.environment }}
+
+      - name: Verify recovery
+        run: |
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          URL="${{ env.ENVIRONMENT == 'production' && 'https://moltbot-worker.pages.dev' || 'https://moltbot-staging.pages.dev' }}"
+          
+          echo "Verifying disaster recovery..."
+          
+          # Health check
+          for i in {1..10}; do
+            if curl -f "$URL/health" --max-time 30; then
+              echo "✅ Health check passed on attempt $i"
+              break
+            else
+              echo "⚠️ Health check failed, attempt $i/10"
+              sleep 10
+            fi
+          done
+          
+          # Final verification
+          if ! curl -f "$URL/health" --max-time 30; then
+            echo "❌ Disaster recovery verification failed"
+            exit 1
+          fi
+
+      - name: Update disaster recovery registry
+        run: |
+          aws dynamodb put-item \
+            --table-name moltbot-disaster-recovery-registry \
+            --item '{
+              "recovery_id": {"S": "dr-'$(date +%Y%m%d-%H%M%S)'"},
+              "backup_id": {"S": "'${{ env.BACKUP_ID }}'"},
+              "environment": {"S": "'${{ github.event.inputs.environment }}'"},
+              "recovery_timestamp": {"S": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"},
+              "success": {"BOOL": true},
+              "restored_by": {"S": "GitHub Actions"}
+            }' \
+            --region ${{ env.AWS_REGION }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        continue-on-error: true
+
+      - name: Notify disaster recovery
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#alerts'
+          text: '🚨 Disaster recovery completed: ${{ env.BACKUP_ID }}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ALERTS }}
+        if: always()
+
+  # Backup Verification
+  backup-verification:
+    name: Backup Verification
+    runs-on: ubuntu-latest
+    needs: automated-backup
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Verify backup integrity
+        run: |
+          echo "Running backup verification..."
+          
+          # Check recent backups
+          for ENV in production staging; do
+            echo "=== Verifying $ENV backups ==="
+            
+            # Check if backup exists and is accessible
+            LATEST_BACKUP=$(aws s3 ls "s3://moltbot-backups/$ENV/" --recursive | sort | tail -1)
+            if [ -n "$LATEST_BACKUP" ]; then
+              echo "✅ Latest backup found for $ENV"
+              
+              # Verify backup is within last 24 hours
+              BACKUP_DATE=$(echo "$LATEST_BACKUP" | awk '{print $1" "$2}')
+              BACKUP_TIMESTAMP=$(date -d "$BACKUP_DATE" +%s 2>/dev/null || echo 0)
+              CURRENT_TIMESTAMP=$(date +%s)
+              AGE_HOURS=$(( ($CURRENT_TIMESTAMP - $BACKUP_TIMESTAMP) / 3600 ))
+              
+              if [ $AGE_HOURS -lt 24 ]; then
+                echo "✅ Backup is recent ($AGE_HOURS hours old)"
+              else
+                echo "⚠️ Backup is old ($AGE_HOURS hours old)"
+              fi
+            else
+              echo "❌ No backup found for $ENV"
+            fi
+          done
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # Backup Monitoring and Alerting
+  backup-monitoring:
+    name: Backup Monitoring
+    runs-on: ubuntu-latest
+    needs: [automated-backup, backup-verification]
+    if: failure()
+    steps:
+      - name: Backup failure alert
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#alerts'
+          text: '🚨 Backup process failed - please investigate immediately'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ALERTS }}

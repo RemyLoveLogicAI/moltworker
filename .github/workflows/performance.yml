@@ -1,0 +1,408 @@
+name: Performance Monitoring
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Performance monitoring every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Performance test type'
+        required: true
+        default: 'load'
+        type: choice
+        options:
+        - load
+        - stress
+        - endurance
+        - spike
+
+env:
+  K6_VERSION: '0.47.0'
+  ARTIFACT_RETENTION_DAYS: '30'
+
+jobs:
+  # Load Testing
+  load-testing:
+    name: Load Testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application for testing
+        run: |
+          npm run start &
+          sleep 30
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6=${{ env.K6_VERSION }}
+
+      - name: Run load tests
+        run: |
+          cat > load-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+          
+          export let options = {
+            stages: [
+              { duration: '2m', target: 100 },
+              { duration: '5m', target: 100 },
+              { duration: '2m', target: 200 },
+              { duration: '5m', target: 200 },
+              { duration: '2m', target: 0 },
+            ],
+            thresholds: {
+              http_req_duration: ['p(95)<500'],
+              http_req_failed: ['rate<0.1'],
+            },
+          };
+          
+          export default function () {
+            let response = http.get('http://localhost:8787/health');
+            check(response, {
+              'status is 200': (r) => r.status === 200,
+              'response time < 500ms': (r) => r.timings.duration < 500,
+            });
+            
+            response = http.get('http://localhost:8787/api/health');
+            check(response, {
+              'status is 200': (r) => r.status === 200,
+            });
+            
+            sleep(1);
+          }
+          EOF
+          
+          k6 run load-test.js --out json=load-test-results.json
+
+      - name: Upload load test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: load-test-results.json
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # Lighthouse Performance Audit
+  lighthouse-audit:
+    name: Lighthouse Performance Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          npm run start &
+          sleep 30
+
+      - name: Run Lighthouse CI
+        run: |
+          npm install -g @lhci/cli@0.12.x
+          lhci autorun
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+      - name: Generate performance report
+        run: |
+          # Extract key metrics from Lighthouse results
+          npx @lhci/cli@0.12.x collect --settings.chromeFlags="--headless"
+          npx @lhci/cli@0.12.x assert --config=.lighthouserc.json
+          npx @lhci/cli@0.12.x upload --config=.lighthouserc.json
+
+  # API Performance Testing
+  api-performance:
+    name: API Performance Testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Artillery
+        run: npm install -g artillery@2.0.0
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          npm run start &
+          sleep 30
+
+      - name: Run API performance tests
+        run: |
+          cat > artillery-config.yml << 'EOF'
+          config:
+            target: 'http://localhost:8787'
+            phases:
+              - duration: 60
+                arrivalRate: 10
+                name: "Warm up"
+              - duration: 120
+                arrivalRate: 50
+                name: "Load test"
+              - duration: 60
+                arrivalRate: 100
+                name: "Peak load"
+          scenarios:
+            - name: "Health check"
+              weight: 70
+              flow:
+                - get:
+                    url: "/health"
+            - name: "API health check"
+              weight: 20
+              flow:
+                - get:
+                    url: "/api/health"
+            - name: "API devices"
+              weight: 10
+              flow:
+                - get:
+                    url: "/api/devices"
+          EOF
+          
+          artillery run artillery-config.yml --output api-performance-results.json
+
+      - name: Upload API performance results
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-performance-results
+          path: api-performance-results.json
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # Database Performance Testing
+  database-performance:
+    name: Database Performance Testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test R2 performance
+        run: |
+          # Test R2 bucket performance
+          echo "Testing R2 bucket performance..."
+          
+          # Create test file
+          dd if=/dev/urandom of=test-file.bin bs=1M count=10
+          
+          # Upload test
+          START_TIME=$(date +%s%N)
+          aws s3 cp test-file.bin s3://moltbot-test-data/performance-test/ --region us-east-1
+          END_TIME=$(date +%s%N)
+          UPLOAD_TIME=$((($END_TIME - $START_TIME) / 1000000))
+          echo "Upload time: ${UPLOAD_TIME}ms"
+          
+          # Download test
+          START_TIME=$(date +%s%N)
+          aws s3 cp s3://moltbot-test-data/performance-test/test-file.bin downloaded-file.bin --region us-east-1
+          END_TIME=$(date +%s%N)
+          DOWNLOAD_TIME=$((($END_TIME - $START_TIME) / 1000000))
+          echo "Download time: ${DOWNLOAD_TIME}ms"
+          
+          # Cleanup
+          rm test-file.bin downloaded-file.bin
+          aws s3 rb s3://moltbot-test-data/performance-test/ --region us-east-1 --force
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # Memory and Resource Usage Monitoring
+  resource-monitoring:
+    name: Resource Usage Monitoring
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and start application
+        run: |
+          npm run build
+          npm run start &
+          sleep 30
+
+      - name: Monitor resource usage
+        run: |
+          # Monitor for 5 minutes
+          for i in {1..30}; do
+            echo "=== Check $i ==="
+            
+            # Memory usage
+            MEMORY=$(ps aux | grep 'node.*start' | grep -v grep | awk '{print $6}')
+            echo "Memory usage: ${MEMORY}KB"
+            
+            # CPU usage
+            CPU=$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1)
+            echo "CPU usage: ${CPU}%"
+            
+            # Response time
+            RESPONSE_TIME=$(curl -o /dev/null -s -w '%{time_total}' http://localhost:8787/health)
+            echo "Response time: ${RESPONSE_TIME}s"
+            
+            # Check if process is still running
+            if ! pgrep -f "node.*start" > /dev/null; then
+              echo "❌ Process died during monitoring"
+              exit 1
+            fi
+            
+            sleep 10
+          done
+
+      - name: Generate resource report
+        run: |
+          echo "# Resource Usage Report" >> $GITHUB_STEP_SUMMARY
+          echo "Monitoring completed successfully" >> $GITHUB_STEP_SUMMARY
+          echo "Application remained stable during monitoring period" >> $GITHUB_STEP_SUMMARY
+
+  # Performance Regression Testing
+  regression-testing:
+    name: Performance Regression Testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build current version
+        run: npm run build
+
+      - name: Test current version performance
+        run: |
+          npm run start &
+          sleep 30
+          
+          # Simple performance test
+          curl -w "@curl-format.txt" -o /dev/null -s "http://localhost:8787/health" > current-perf.json
+          pkill -f "npm run start"
+          
+          sleep 5
+
+      - name: Checkout base branch
+        run: |
+          git checkout origin/main
+          npm ci
+          npm run build
+
+      - name: Test base version performance
+        run: |
+          npm run start &
+          sleep 30
+          
+          # Same performance test on base
+          curl -w "@curl-format.txt" -o /dev/null -s "http://localhost:8787/health" > base-perf.json
+          pkill -f "npm run start"
+
+      - name: Compare performance
+        run: |
+          CURRENT_TIME=$(cat current-perf.json | jq -r '.time_total')
+          BASE_TIME=$(cat base-perf.json | jq -r '.time_total')
+          
+          # Calculate percentage difference
+          DIFF=$(echo "scale=2; (($CURRENT_TIME - $BASE_TIME) / $BASE_TIME) * 100" | bc)
+          
+          echo "Current response time: ${CURRENT_TIME}s"
+          echo "Base response time: ${BASE_TIME}s"
+          echo "Difference: ${DIFF}%"
+          
+          # Fail if performance degraded by more than 10%
+          if (( $(echo "$DIFF > 10" | bc -l) )); then
+            echo "❌ Performance regression detected: ${DIFF}% slower"
+            exit 1
+          else
+            echo "✅ No significant performance regression"
+          fi
+
+      - name: Performance comparison report
+        run: |
+          echo "# Performance Regression Report" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Current | Base | Difference |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|---------|-------|------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Response Time | ${CURRENT_TIME}s | ${BASE_TIME}s | ${DIFF}% |" >> $GITHUB_STEP_SUMMARY
+
+  # Performance Alerting
+  performance-alerts:
+    name: Performance Alerts
+    runs-on: ubuntu-latest
+    needs: [load-testing, lighthouse-audit, api-performance]
+    if: failure()
+    steps:
+      - name: Notify performance issues
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#performance'
+          text: '🚨 Performance tests failed - please review the workflow results'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_PERFORMANCE }}

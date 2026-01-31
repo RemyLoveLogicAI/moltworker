@@ -1,0 +1,354 @@
+name: Environment Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+        - development
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+        - deploy
+        - destroy
+        - backup
+        - restore
+        - health-check
+  push:
+    branches: 
+      - 'env/staging'
+      - 'env/production'
+      - 'env/development'
+  schedule:
+    # Daily environment health checks
+    - cron: '0 6 * * *'
+
+env:
+  TF_VERSION: '1.5.0'
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  # Environment Deployment
+  deploy-environment:
+    name: Deploy to Environment
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'deploy' || github.event.inputs.action == ''
+    environment:
+      name: ${{ github.event.inputs.environment || 'staging' }}
+      url: ${{ github.event.inputs.environment == 'production' && 'https://moltbot-worker.pages.dev' || 'https://moltbot-staging.pages.dev' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Environment-specific configuration
+        run: |
+          ENV=${{ github.event.inputs.environment || 'staging' }}
+          
+          case $ENV in
+            "development")
+              export NODE_ENV=development
+              export DEBUG_ROUTES=true
+              export DEV_MODE=true
+              ;;
+            "staging")
+              export NODE_ENV=staging
+              export DEBUG_ROUTES=true
+              export DEV_MODE=false
+              ;;
+            "production")
+              export NODE_ENV=production
+              export DEBUG_ROUTES=false
+              export DEV_MODE=false
+              ;;
+          esac
+          
+          echo "NODE_ENV=$NODE_ENV" >> $GITHUB_ENV
+          echo "ENVIRONMENT=$ENV" >> $GITHUB_ENV
+
+      - name: Build for environment
+        run: npm run build
+        env:
+          NODE_ENV: ${{ env.NODE_ENV }}
+
+      - name: Deploy to Cloudflare Workers
+        run: |
+          ENV=${{ env.ENVIRONMENT }}
+          npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.ENVIRONMENT == 'production' && secrets.CLOUDFLARE_API_TOKEN_PRODUCTION || secrets.CLOUDFLARE_API_TOKEN_STAGING }}
+          WRANGLER_ENV: ${{ env.ENVIRONMENT }}
+
+      - name: Post-deployment health check
+        run: |
+          sleep 10
+          URL=${{ env.ENVIRONMENT == 'production' && 'https://moltbot-worker.pages.dev' || 'https://moltbot-staging.pages.dev' }}
+          
+          # Basic health check
+          curl -f "$URL/health" || exit 1
+          
+          # API endpoint check
+          curl -f "$URL/api/health" || exit 1
+
+      - name: Environment verification
+        run: |
+          URL=${{ env.ENVIRONMENT == 'production' && 'https://moltbot-worker.pages.dev' || 'https://moltbot-staging.pages.dev' }}
+          
+          # Verify environment-specific settings
+          ENV_CHECK=$(curl -s "$URL/api/environment" | jq -r '.environment // "unknown"')
+          if [ "$ENV_CHECK" != "${{ env.ENVIRONMENT }}" ]; then
+            echo "Environment verification failed: Expected ${{ env.ENVIRONMENT }}, got $ENV_CHECK"
+            exit 1
+          fi
+
+  # Environment Destruction
+  destroy-environment:
+    name: Destroy Environment
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'destroy'
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Confirm destruction
+        run: |
+          echo "⚠️ This will destroy the ${{ github.event.inputs.environment }} environment"
+          echo "Manual confirmation required in GitHub environment protection"
+
+      - name: Remove deployment
+        run: |
+          ENV=${{ github.event.inputs.environment }}
+          
+          # Remove Cloudflare Workers deployment
+          wrangler delete moltbot-worker-$ENV
+          
+          # Remove R2 buckets if they exist
+          wrangler r2 bucket delete moltbot-data-$ENV
+
+      - name: Notify destruction
+        uses: 8398a7/action-slack@v3
+        with:
+          status: warning
+          channel: '#infrastructure'
+          text: "🗑️ Environment ${{ github.event.inputs.environment }} has been destroyed"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Environment Backup
+  backup-environment:
+    name: Backup Environment
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'backup' || github.event.schedule
+    environment:
+      name: ${{ github.event.inputs.environment || 'staging' }}
+    steps:
+      - name: Create backup
+        run: |
+          ENV=${{ github.event.inputs.environment || 'staging' }}
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BACKUP_NAME="moltbot-$ENV-backup-$TIMESTAMP"
+          
+          echo "BACKUP_NAME=$BACKUP_NAME" >> $GITHUB_ENV
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+
+      - name: Backup R2 data
+        run: |
+          ENV=${{ github.event.inputs.environment || 'staging' }}
+          
+          # Sync R2 bucket to backup location
+          aws s3 sync "s3://moltbot-data-$ENV/" "s3://moltbot-backups/$ENV/${{ env.TIMESTAMP }}/" \
+            --region ${{ env.AWS_REGION }} \
+            --storage-class GLACIER
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Backup configuration
+        run: |
+          ENV=${{ github.event.inputs.environment || 'staging' }}
+          
+          # Export worker configuration
+          wrangler whoami
+          
+          # Create backup archive
+          tar -czf "${{ env.BACKUP_NAME }}.tar.gz" \
+            wrangler.toml \
+            package.json \
+            .env.${ENV} \
+            src/
+
+      - name: Upload backup artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_NAME }}
+          path: ${{ env.BACKUP_NAME }}.tar.gz
+          retention-days: 30
+
+      - name: Log backup
+        run: |
+          echo "Backup completed: ${{ env.BACKUP_NAME }}"
+          echo "Size: $(du -h ${{ env.BACKUP_NAME }}.tar.gz)"
+
+  # Environment Restoration
+  restore-environment:
+    name: Restore Environment
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'restore'
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Select backup
+        run: |
+          echo "Available backups (manual selection required):"
+          aws s3 ls s3://moltbot-backups/${{ github.event.inputs.environment }}/ --recursive | head -10
+          
+          echo "⚠️ Manual restoration step required"
+          echo "Specify backup version in workflow inputs"
+
+      - name: Restore from backup
+        run: |
+          BACKUP_VERSION="${{ github.event.inputs.backup_version || 'latest' }}"
+          ENV=${{ github.event.inputs.environment }}
+          
+          # Restore R2 data
+          aws s3 sync "s3://moltbot-backups/$ENV/$BACKUP_VERSION/" "s3://moltbot-data-$ENV/" \
+            --region ${{ env.AWS_REGION }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Redeploy restored configuration
+        uses: actions/checkout@v4
+        with:
+          ref: 'main'  # Or specific backup tag
+
+      - name: Deploy restored version
+        run: |
+          npm ci
+          npm run build
+          npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_ENV: ${{ github.event.inputs.environment }}
+
+  # Environment Health Check
+  health-check:
+    name: Environment Health Check
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'health-check' || github.event.schedule
+    strategy:
+      matrix:
+        environment: [development, staging, production]
+    steps:
+      - name: Check environment health
+        run: |
+          ENV=${{ matrix.environment }}
+          
+          case $ENV in
+            "development")
+              URL="https://moltbot-dev.pages.dev"
+              ;;
+            "staging")
+              URL="https://moltbot-staging.pages.dev"
+              ;;
+            "production")
+              URL="https://moltbot-worker.pages.dev"
+              ;;
+          esac
+          
+          echo "Checking health of $ENV environment at $URL"
+          
+          # Basic connectivity
+          if ! curl -f "$URL/health" --max-time 30; then
+            echo "❌ Health check failed for $ENV"
+            exit 1
+          fi
+          
+          # API endpoint check
+          if ! curl -f "$URL/api/health" --max-time 30; then
+            echo "❌ API health check failed for $ENV"
+            exit 1
+          fi
+          
+          # Response time check
+          RESPONSE_TIME=$(curl -o /dev/null -s -w '%{time_total}' "$URL/health")
+          if (( $(echo "$RESPONSE_TIME > 5.0" | bc -l) )); then
+            echo "⚠️ Slow response time for $ENV: ${RESPONSE_TIME}s"
+          fi
+          
+          echo "✅ $ENV environment is healthy"
+
+      - name: Check worker status
+        run: |
+          ENV=${{ matrix.environment }}
+          
+          # Check Cloudflare Worker status
+          wrangler whoami
+          
+          # Check R2 bucket status
+          if aws s3 ls "s3://moltbot-data-$ENV/" --region ${{ env.AWS_REGION }}; then
+            echo "✅ R2 bucket accessible for $ENV"
+          else
+            echo "❌ R2 bucket not accessible for $ENV"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Report health status
+        if: failure()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#alerts'
+          text: "🚨 Health check failed for ${{ matrix.environment }} environment"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Environment Monitoring Setup
+  setup-monitoring:
+    name: Setup Environment Monitoring
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'deploy'
+    needs: deploy-environment
+    steps:
+      - name: Configure monitoring
+        run: |
+          ENV=${{ github.event.inputs.environment || 'staging' }}
+          URL=${{ env.ENVIRONMENT == 'production' && 'https://moltbot-worker.pages.dev' || 'https://moltbot-staging.pages.dev' }}
+          
+          # Setup uptime monitoring
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.UPTILABOT_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"name\": \"Moltbot Worker $ENV\",
+              \"url\": \"$URL/health\",
+              \"interval\": 60,
+              \"timeout\": 30
+            }" \
+            https://uptimerobot.com/api/v2/newMonitor
+
+      - name: Setup log aggregation
+        run: |
+          ENV=${{ github.event.inputs.environment || 'staging' }}
+          
+          echo "Setting up log aggregation for $ENV environment"
+          # Configure Cloudflare Workers log push to external logging service
