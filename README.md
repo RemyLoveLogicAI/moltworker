@@ -265,6 +265,96 @@ npx wrangler secret put SLACK_APP_TOKEN
 npm run deploy
 ```
 
+## Optional: Voice Interactions (TTS/STT)
+
+This project supports multiple text-to-speech and speech-to-text providers for voice interactions, including NVIDIA-powered options via Cloudflare Workers AI.
+
+### Cloudflare Workers AI (Recommended)
+
+Workers AI provides access to Deepgram Aura TTS and Nova STT models, powered by NVIDIA GPUs at the edge.
+
+**Setup:**
+
+1. Set environment variables:
+
+```bash
+npx wrangler secret put TTS_PROVIDER
+# Enter: workersai
+
+npx wrangler secret put STT_PROVIDER
+# Enter: workersai
+
+npx wrangler secret put TTS_VOICE
+# Enter: aura-asteria-en (or: aura-orion-en, aura-luna-en, aura-stella-en)
+```
+
+2. Add CLOUDFLARE_API_TOKEN for Workers AI access:
+
+```bash
+npx wrangler secret put CLOUDFLARE_API_KEY
+# Enter your Cloudflare API token with Workers AI permissions
+```
+
+**Supported Voices:**
+- `aura-asteria-en` - Natural, expressive English
+- `aura-orion-en` - Deep, authoritative English  
+- `aura-luna-en` - Warm, friendly English
+- `aura-stella-en` - Professional English
+
+### NVIDIA NIM Endpoint
+
+For self-hosted NVIDIA AI models including PersonaPlex, configure the NIM endpoint:
+
+```bash
+npx wrangler secret put TTS_PROVIDER
+# Enter: nim
+
+npx wrangler secret put STT_PROVIDER
+# Enter: nim
+
+npx wrangler secret put NVIDIA_NIM_ENDPOINT
+# Enter: https://your-nim-host:8000
+
+npx wrangler secret put NVIDIA_NIM_API_KEY
+# Enter your NIM API key (if required)
+```
+
+### OpenAI / ElevenLabs
+
+```bash
+# OpenAI
+cp .dev.vars.example .dev.vars
+# Add: OPENAI_API_KEY=sk-...
+
+# ElevenLabs
+npx wrangler secret put ELEVENLABS_API_KEY
+npx wrangler secret put TTS_PROVIDER
+# Enter: elevenlabs
+```
+
+### Voice-Call Plugin
+
+Moltbot's voice-call plugin can use these TTS/STT providers for telephony-based voice calls:
+
+```json
+{
+  "plugins": {
+    "voice-call": {
+      "enabled": true,
+      "tts": {
+        "provider": "workersai",
+        "model": "@cf/deepgram/aura-asteria-en"
+      },
+      "stt": {
+        "provider": "workersai",
+        "model": "@cf/deepgram/nova-2"
+      }
+    }
+  }
+}
+
+See `skills/personaplex-voice/SKILL.md` for detailed documentation on voice interactions, model options, and NVIDIA PersonaPlex integration.
+
 ## Optional: Browser Automation (CDP)
 
 This worker includes a Chrome DevTools Protocol (CDP) shim that enables browser automation capabilities. This allows OpenClaw to control a headless browser for tasks like web scraping, screenshots, and automated testing.
@@ -325,6 +415,44 @@ node /root/clawd/skills/cloudflare-browser/scripts/video.js "https://site1.com,h
 ```
 
 See `skills/cloudflare-browser/SKILL.md` for full documentation.
+
+### personaplex-voice
+
+Voice interaction skill using Cloudflare Workers AI with NVIDIA-powered Deepgram Aura models for natural TTS and STT. Also supports NVIDIA NIM endpoints and OpenAI/ElevenLabs providers.
+
+**Features:**
+- Multiple TTS providers: Workers AI (Deepgram Aura), NVIDIA NIM, OpenAI, ElevenLabs
+- Multiple STT providers: Workers AI (Deepgram Nova), NVIDIA NIM (Riva ASR), OpenAI Whisper
+- Low-latency, natural voice synthesis
+- Customizable voices and personas
+- Integration with Moltbot voice-call plugin
+
+**Usage:**
+```bash
+# TTS-only demo
+node /root/clawd/skills/personaplex-voice/demo.js tts "Hello world!"
+
+# STT-only demo
+node /root/clawd/skills/personaplex-voice/demo.js stt input.wav
+
+# Full voice interaction demo
+node /root/clawd/skills/personaplex-voice/demo.js input.wav
+```
+
+**Configuration:**
+```bash
+# Use Workers AI (Deepgram Aura) - NVIDIA GPU-powered
+TTS_PROVIDER=workersai
+STT_PROVIDER=workersai
+TTS_VOICE=aura-asteria-en
+
+# Alternative: Use NVIDIA NIM endpoint
+TTS_PROVIDER=nim
+STT_PROVIDER=nim
+NVIDIA_NIM_ENDPOINT=https://your-nim-host:8000
+```
+
+See `skills/personaplex-voice/SKILL.md` for full documentation including model options, API endpoints, and NVIDIA PersonaPlex integration notes.
 
 ## Optional: Cloudflare AI Gateway
 

@@ -205,6 +205,58 @@ Moltbot has strict config validation. Common gotchas:
 
 See [Moltbot docs](https://docs.molt.bot/gateway/configuration) for full schema.
 
+## Voice/TTS Configuration
+
+### Supported Providers
+
+The project supports multiple TTS/STT providers for voice interactions:
+
+| Provider | TTS Models | STT Models | Notes |
+|----------|-----------|-----------|-------|
+| Workers AI | Deepgram Aura (@cf/deepgram/aura-*) | Deepgram Nova (@cf/deepgram/nova-2) | NVIDIA GPU-powered at edge, recommended |
+| NVIDIA NIM | Riva TTS | Riva ASR | Self-hosted, supports PersonaPlex |
+| OpenAI | tts-1, tts-1-hd | whisper-1 | General purpose |
+| ElevenLabs | Custom voices | N/A | Premium quality |
+
+### Configuration
+
+Add to MoltbotEnv in `src/types.ts`:
+
+```typescript
+TTS_PROVIDER?: string;
+STT_PROVIDER?: string;
+TTS_VOICE?: string;
+NVIDIA_NIM_ENDPOINT?: string;
+NVIDIA_NIM_API_KEY?: string;
+```
+
+Map in `src/gateway/env.ts`:
+
+```typescript
+if (env.TTS_PROVIDER) envVars.TTS_PROVIDER = env.TTS_PROVIDER;
+// ... map other vars
+```
+
+Configure in `start-moltbot.sh`:
+
+```bash
+config.messages.tts.provider = ttsProvider;
+config.messages.tts.model = process.env.TTS_VOICE;
+// ... provider-specific config
+```
+
+### NVIDIA PersonaPlex Integration
+
+PersonaPlex is a full-duplex speech-to-speech model requiring GPU compute and Python runtime. It cannot run directly in Cloudflare Sandbox containers.
+
+**Integration Options:**
+
+1. **Use Workers AI** - NVIDIA GPU-powered Deepgram Aura models (recommended)
+2. **NIM Endpoint** - Deploy PersonaPlex externally, connect via NIM
+3. **OpenAI Realtime** - Alternative streaming voice-to-voice API
+
+See `skills/personaplex-voice/SKILL.md` for detailed implementation notes.
+
 ## Common Tasks
 
 ### Adding a New API Endpoint

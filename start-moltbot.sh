@@ -208,7 +208,359 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     config.channels.slack.enabled = true;
 }
 
-// Base URL override (e.g., for Cloudflare AI Gateway)
+// ============================================================
+// VOICE TTS/STT CONFIGURATION
+// ============================================================
+// Configure text-to-speech and speech-to-text providers
+// Providers: workersai (Deepgram/NVIDIA), openai, elevenlabs, nim (NVIDIA NIM)
+
+const ttsProvider = process.env.TTS_PROVIDER || '';
+const sttProvider = process.env.STT_PROVIDER || '';
+const ttsVoice = process.env.TTS_VOICE || '';
+const elevenlabsKey = process.env.ELEVENLABS_API_KEY || '';
+const deepgramKey = process.env.DEEPGRAM_API_KEY || '';
+
+// Initialize messages config
+config.messages = config.messages || {};
+config.messages.tts = config.messages.tts || {};
+config.messages.stt = config.messages.stt || {};
+
+// TTS Configuration
+if (ttsProvider) {
+    config.messages.tts.provider = ttsProvider;
+    
+    if (ttsProvider === 'workersai') {
+        // Workers AI - uses Deepgram Aura for TTS
+        config.messages.tts.model = ttsVoice || 'aura-asteria-en';
+        console.log('Configured Workers AI TTS with voice:', config.messages.tts.model);
+    } else if (ttsProvider === 'openai') {
+        // OpenAI TTS
+        config.messages.tts.model = ttsVoice || 'tts-1';
+        console.log('Configured OpenAI TTS with model:', config.messages.tts.model);
+    } else if (ttsProvider === 'elevenlabs') {
+        // ElevenLabs TTS
+        if (elevenlabsKey) {
+            config.messages.tts.apiKey = elevenlabsKey;
+        }
+        config.messages.tts.model = ttsVoice || '';
+        console.log('Configured ElevenLabs TTS' + (ttsVoice ? ' with voice: ' + ttsVoice : ''));
+    } else if (ttsProvider === 'nim') {
+        // NVIDIA NIM TTS
+        config.messages.tts.model = ttsVoice || 'rake';
+        console.log('Configured NVIDIA NIM TTS with model:', config.messages.tts.model);
+    }
+}
+
+// STT Configuration
+if (sttProvider) {
+    config.messages.stt.provider = sttProvider;
+    
+    if (sttProvider === 'workersai') {
+        // Workers AI - uses Deepgram Nova for STT
+        config.messages.stt.model = 'nova-2';
+        if (deepgramKey) {
+            config.messages.stt.apiKey = deepgramKey;
+        }
+        console.log('Configured Workers AI STT with Deepgram Nova-2');
+    } else if (sttProvider === 'openai') {
+        // OpenAI Whisper STT
+        config.messages.stt.model = 'whisper-1';
+        console.log('Configured OpenAI Whisper STT');
+    } else if (sttProvider === 'nim') {
+        // NVIDIA NIM STT (Riva ASR)
+        config.messages.stt.model = 'stt_en_fast_conformer';
+        console.log('Configured NVIDIA NIM STT');
+    }
+}
+
+// ============================================================
+// ADDITIONAL AI PROVIDERS CONFIGURATION
+// ============================================================
+// These providers can be used via custom model configurations
+
+// Initialize models providers
+config.models = config.models || {};
+config.models.providers = config.models.providers || {};
+
+// OpenRouter
+if (process.env.OPENROUTER_API_KEY) {
+    config.models.providers.openrouter = {
+        baseUrl: 'https://openrouter.ai/api/v1',
+        api: 'openai-responses',
+        models: [
+            { id: 'anthropic/claude-sonnet-4-20250514', name: 'Claude Sonnet 4', contextWindow: 200000 },
+        ]
+    };
+}
+
+// Google Gemini
+if (process.env.GEMINI_API_KEY) {
+    config.models.providers.gemini = {
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        api: 'google-gemini',
+        models: [
+            { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash', contextWindow: 1048576 },
+        ]
+    };
+}
+
+// Mistral
+if (process.env.MISTRAL_API_KEY) {
+    config.models.providers.mistral = {
+        baseUrl: 'https://api.mistral.ai/v1',
+        api: 'openai-responses',
+        models: [
+            { id: 'mistral-small-2501', name: 'Mistral Small', contextWindow: 131072 },
+        ]
+    };
+}
+
+// Fireworks AI
+if (process.env.FIREWORKS_API_KEY) {
+    config.models.providers.fireworks = {
+        baseUrl: 'https://api.fireworks.ai/inference/v1',
+        api: 'openai-responses',
+        models: [
+            { id: 'accounts/fireworks/models/llama-v3p1-405b-instruct', name: 'Llama 3.1 405B', contextWindow: 131072 },
+        ]
+    };
+}
+
+// xAI (Grok)
+if (process.env.X1_API_KEY) {
+    config.models.providers.xai = {
+        baseUrl: 'https://api.x.ai/v1',
+        api: 'openai-responses',
+        models: [
+            { id: 'grok-3-beta', name: 'Grok 3 Beta', contextWindow: 131072 },
+        ]
+    };
+}
+
+// Deepshot Kimi2
+if (process.env.DEEPSHOT_KIMI2_API_KEY) {
+    config.models.providers.deepshot = {
+        baseUrl: 'https://api.deepshot.io/v1',
+        api: 'openai-responses',
+        models: [
+            { id: 'kimi2-thinking', name: 'Kimi2 Thinking', contextWindow: 200000 },
+        ]
+    };
+}
+
+// MiniMax
+if (process.env.MINIMAX_API_KEY) {
+    config.models.providers.minimax = {
+        baseUrl: 'https://api.minimax.chat/v1',
+        api: 'openai-responses',
+        models: [
+            { id: 'abab6.5s-chat', name: 'MiniMax ABAB 6.5s', contextWindow: 16384 },
+        ]
+    };
+}
+
+// ============================================================
+// ADVANCED FEATURES & INTEGRATIONS
+// ============================================================
+
+// You.com Web Search
+if (process.env.YOU_API_KEY) {
+    config.webSearch = config.webSearch || {};
+    config.webSearch.provider = 'you';
+    config.webSearch.apiKey = process.env.YOU_API_KEY;
+    config.webSearch.enabled = true;
+    console.log('Configured You.com web search');
+}
+
+// GitHub Integration
+if (process.env.GITHUB_API_KEY || process.env.GITHUB_PAT) {
+    config.github = config.github || {};
+    config.github.apiKey = process.env.GITHUB_API_KEY || process.env.GITHUB_PAT;
+    config.github.enabled = true;
+    console.log('Configured GitHub integration');
+}
+
+// ============================================================
+// MEMORY & KNOWLEDGE BASE CONFIGURATION
+// ============================================================
+// Configure vector stores and memory for RAG capabilities
+
+config.memory = config.memory || {};
+config.memory.enabled = true;
+
+// Qdrant Vector Database (memory storage)
+if (process.env.QDRANT_API_KEY) {
+    config.vectorStores = config.vectorStores || {};
+    config.vectorStores.qdrant = {
+        url: process.env.QDRANT_URL || 'https://qdrant.example.com',
+        apiKey: process.env.QDRANT_API_KEY,
+        collectionName: 'moltbot_memory',
+        // Memory-specific settings
+        memory: {
+            chunkSize: 1000,
+            chunkOverlap: 200,
+            embedBatchSize: 32,
+        }
+    };
+    config.memory.vectorStore = 'qdrant';
+    console.log('Configured Qdrant vector store for memory');
+}
+
+// ============================================================
+// AGENT & TOOL CONFIGURATION
+// ============================================================
+
+config.agents = config.agents || {};
+config.agents.defaults = config.agents.defaults || {};
+
+// Configure default agent capabilities
+config.agents.defaults.capabilities = config.agents.defaults.capabilities || [];
+config.agents.defaults.capabilities.push('web-search', 'file-read', 'file-write', 'bash');
+
+// Tools configuration
+config.tools = config.tools || {};
+
+// Web Scraper
+if (process.env.YOU_API_KEY) {
+    config.tools.webScraper = {
+        enabled: true,
+        timeout: 30000,
+        maxContentLength: 50000,
+    };
+}
+
+// Code Executor
+config.tools.codeExecutor = {
+    enabled: true,
+    language: 'javascript',
+    timeout: 60000,
+    maxOutputSize: 100000,
+};
+
+// ============================================================
+// VOICE ADVANCED CONFIGURATION
+// ============================================================
+
+if (ttsProvider === 'elevenlabs' && elevenlabsKey) {
+    // ElevenLabs advanced settings
+    config.messages.tts.elevenlabs = config.messages.tts.elevenlabs || {};
+    config.messages.tts.elevenlabs.stability = 0.5;
+    config.messages.tts.elevenlabs.similarityBoost = 0.75;
+    config.messages.tts.elevenlabs.style = 0.0;
+    config.messages.tts.elevenlabs.useSpeakerBoost = true;
+}
+
+if (sttProvider === 'workersai' || sttProvider === 'nim') {
+    // Speech-to-text advanced settings
+    config.messages.stt = config.messages.stt || {};
+    config.messages.stt.enablePunctuation = true;
+    config.messages.stt.enableCapitalization = true;
+    config.messages.stt.language = 'en';
+}
+
+// ============================================================
+// CACHING & PERFORMANCE
+// ============================================================
+
+config.cache = config.cache || {};
+config.cache.enabled = true;
+config.cache.type = 'memory';
+config.cache.maxSize = 1000; // Max cached responses
+config.cache.ttl = 3600; // Cache TTL in seconds (1 hour)
+
+// ============================================================
+// RATE LIMITING
+// ============================================================
+
+config.rateLimits = config.rateLimits || {};
+config.rateLimits.enabled = true;
+
+// Provider-specific rate limits
+config.rateLimits.providers = config.rateLimits.providers || {};
+config.rateLimits.providers.anthropic = {
+    requestsPerMinute: 60,
+    tokensPerMinute: 100000,
+};
+config.rateLimits.providers.openai = {
+    requestsPerMinute: 60,
+    tokensPerMinute: 150000,
+};
+
+// ============================================================
+// EVALUATION & TESTING (TestSprite)
+// ============================================================
+
+if (process.env.TESTSPRITE_API_KEY) {
+    config.evaluation = config.evaluation || {};
+    config.evaluation.enabled = true;
+    config.evaluation.provider = 'testsprite';
+    config.evaluation.apiKey = process.env.TESTSPRITE_API_KEY;
+    console.log('configured TestSprite evaluation');
+}
+
+// ============================================================
+// CLOUDFLARE INTEGRATION
+// ============================================================
+
+if (process.env.CLOUDFLARE_API_TOKEN) {
+    config.cloudflare = config.cloudflare || {};
+    config.cloudflare.apiToken = process.env.CLOUDFLARE_API_TOKEN;
+    config.cloudflare.accountId = process.env.CF_ACCOUNT_ID || '';
+    
+    // Enable Cloudflare Workers integration
+    config.cloudflare.workers = {
+        enabled: true,
+        deploy: true,
+    };
+    
+    // Enable D1 integration
+    config.cloudflare.d1 = {
+        enabled: true,
+        databases: [],
+    };
+    
+    console.log('Configured Cloudflare integration');
+}
+
+// ============================================================
+// MULTI-MODAL CONFIGURATION
+// ============================================================
+
+config.multimodal = config.multimodal || {};
+config.multimodal.enabled = true;
+config.multimodal.vision = {
+    enabled: true,
+    maxImageSize: 5242880, // 5MB
+    supportedFormats: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+};
+
+// ============================================================
+// PERSONA & SYSTEM PROMPT CUSTOMIZATION
+// ============================================================
+
+config.personas = config.personas || {};
+config.personas.default = {
+    name: 'Assistant',
+    description: 'A helpful AI assistant',
+    instructions: 'You are a helpful, harmless, and honest AI assistant.',
+};
+
+// Add research persona
+config.personas.researcher = {
+    name: 'Researcher',
+    description: 'Specialized in web research and fact-finding',
+    instructions: 'You are a research specialist. Use web search to find accurate, up-to-date information. Always cite your sources.',
+    capabilities: ['web-search', 'web-scraping'],
+};
+
+// Add code persona
+config.personas.coder = {
+    name: 'Coder',
+    description: 'Specialized in code review and programming',
+    instructions: 'You are a coding expert. Write clean, efficient code. Perform thorough code reviews.',
+    capabilities: ['code-execution', 'file-operations'],
+};
+
 // Usage: Set AI_GATEWAY_BASE_URL or ANTHROPIC_BASE_URL to your endpoint like:
 //   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic
 //   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai

@@ -7,5 +7,16 @@
   "gateway": {
     "port": 18789,
     "mode": "local"
+  },
+  "messages": {
+    "tts": {
+      "provider": "openai",
+      "model": "tts-1",
+      "voice": "alloy"
+    },
+    "stt": {
+      "provider": "openai",
+      "model": "whisper-1"
+    }
   }
 }

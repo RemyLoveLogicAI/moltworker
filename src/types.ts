@@ -37,6 +37,42 @@ export interface MoltbotEnv {
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication
   WORKER_URL?: string; // Public URL of the worker (for CDP endpoint)
+  // TTS/STT configuration for voice interactions
+  TTS_PROVIDER?: string; // TTS provider: 'openai', 'elevenlabs', 'workersai', 'nim'
+  STT_PROVIDER?: string; // STT provider: 'openai', 'workersai', 'nim'
+  NVIDIA_NIM_ENDPOINT?: string; // NVIDIA NIM endpoint URL (e.g., https://your-nim-host:8000)
+  NVIDIA_NIM_API_KEY?: string; // API key for NVIDIA NIM endpoint
+  TTS_VOICE?: string; // Voice model/name to use (e.g., 'aura-asteria-en' for Workers AI)
+  ELEVENLABS_API_KEY?: string; // ElevenLabs API key for TTS
+  DEEPGRAM_API_KEY?: string; // Deepgram API key for STT (Workers AI)
+  // Additional AI providers
+  OPENROUTER_API_KEY?: string;
+  GEMINI_API_KEY?: string;
+  MISTRAL_API_KEY?: string;
+  FIREWORKS_API_KEY?: string;
+  X1_API_KEY?: string;
+  DEEPSHOT_KIMI2_API_KEY?: string;
+  MINIMAX_API_KEY?: string;
+  // Vector database
+  QDRANT_API_KEY?: string;
+  QDRANT_URL?: string; // Qdrant server URL
+  // GitHub
+  GITHUB_API_KEY?: string;
+  GITHUB_PAT?: string;
+  // Other providers
+  YOU_API_KEY?: string;
+  DROID_API_KEY?: string;
+  OLLAMA_API_KEY?: string;
+  ZAI_API_KEY?: string;
+  TESTSPRITE_API_KEY?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+  // Advanced features
+  CACHE_ENABLED?: string; // Enable response caching
+  RATE_LIMIT_ENABLED?: string; // Enable rate limiting
+  WEB_SEARCH_ENABLED?: string; // Enable web search
+  // Memory configuration
+  MEMORY_CHUNK_SIZE?: string; // Chunk size for memory storage
+  MEMORY_COLLECTION_NAME?: string; // Qdrant collection name for memory
 }
 
 /**
