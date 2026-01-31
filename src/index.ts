@@ -32,6 +32,16 @@ import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
 
 /**
+ * Helper function for conditional debug logging
+ * Only logs when DEBUG_MODE environment variable is set to 'true'
+ */
+function debugLog(env: MoltbotEnv, ...args: any[]): void {
+  if (env.DEBUG_MODE === 'true') {
+    console.log(...args);
+  }
+}
+
+/**
  * Transform error messages from the gateway to be more user-friendly.
  */
 function transformErrorMessage(message: string, host: string): string {
@@ -111,13 +121,13 @@ const app = new Hono<AppEnv>();
 // MIDDLEWARE: Applied to ALL routes
 // =============================================================================
 
-// Middleware: Log every request
+// Middleware: Log every request (conditional debug logging)
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url);
-  console.log(`[REQ] ${c.req.method} ${url.pathname}${url.search}`);
-  console.log(`[REQ] Has ANTHROPIC_API_KEY: ${!!c.env.ANTHROPIC_API_KEY}`);
-  console.log(`[REQ] DEV_MODE: ${c.env.DEV_MODE}`);
-  console.log(`[REQ] DEBUG_ROUTES: ${c.env.DEBUG_ROUTES}`);
+  debugLog(c.env, `[REQ] ${c.req.method} ${url.pathname}${url.search}`);
+  debugLog(c.env, `[REQ] Has ANTHROPIC_API_KEY: ${!!c.env.ANTHROPIC_API_KEY}`);
+  debugLog(c.env, `[REQ] DEV_MODE: ${c.env.DEV_MODE}`);
+  debugLog(c.env, `[REQ] DEBUG_ROUTES: ${c.env.DEBUG_ROUTES}`);
   await next();
 });
 
@@ -160,7 +170,9 @@ app.use('*', async (c, next) => {
   
   const missingVars = validateRequiredEnv(c.env);
   if (missingVars.length > 0) {
-    console.error('[CONFIG] Missing required environment variables:', missingVars.join(', '));
+    if (c.env.DEBUG_MODE === 'true') {
+      console.error('[CONFIG] Missing required environment variables:', missingVars.join(', '));
+    }
     
     const acceptsHtml = c.req.header('Accept')?.includes('text/html');
     if (acceptsHtml) {
@@ -217,7 +229,7 @@ app.all('*', async (c) => {
   const request = c.req.raw;
   const url = new URL(request.url);
 
-  console.log('[PROXY] Handling request:', url.pathname);
+  debugLog(c.env, '[PROXY] Handling request:', url.pathname);
 
   // Check if gateway is already running
   const existingProcess = await findExistingMoltbotProcess(sandbox);
@@ -228,12 +240,14 @@ app.all('*', async (c) => {
   const acceptsHtml = request.headers.get('Accept')?.includes('text/html');
   
   if (!isGatewayReady && !isWebSocketRequest && acceptsHtml) {
-    console.log('[PROXY] Gateway not ready, serving loading page');
+    debugLog(c.env, '[PROXY] Gateway not ready, serving loading page');
     
     // Start the gateway in the background (don't await)
     c.executionCtx.waitUntil(
       ensureMoltbotGateway(sandbox, c.env).catch((err: Error) => {
-        console.error('[PROXY] Background gateway start failed:', err);
+        if (c.env.DEBUG_MODE === 'true') {
+          console.error('[PROXY] Background gateway start failed:', err);
+        }
       })
     );
     
@@ -245,7 +259,9 @@ app.all('*', async (c) => {
   try {
     await ensureMoltbotGateway(sandbox, c.env);
   } catch (error) {
-    console.error('[PROXY] Failed to start Moltbot:', error);
+    if (c.env.DEBUG_MODE === 'true') {
+      console.error('[PROXY] Failed to start Moltbot:', error);
+    }
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     let hint = 'Check worker logs with: wrangler tail';
@@ -264,22 +280,24 @@ app.all('*', async (c) => {
 
   // Proxy to Moltbot with WebSocket message interception
   if (isWebSocketRequest) {
-    console.log('[WS] Proxying WebSocket connection to Moltbot');
-    console.log('[WS] URL:', request.url);
-    console.log('[WS] Search params:', url.search);
+    debugLog(c.env, '[WS] Proxying WebSocket connection to Moltbot');
+    debugLog(c.env, '[WS] URL:', request.url);
+    debugLog(c.env, '[WS] Search params:', url.search);
     
     // Get WebSocket connection to the container
     const containerResponse = await sandbox.wsConnect(request, MOLTBOT_PORT);
-    console.log('[WS] wsConnect response status:', containerResponse.status);
+    debugLog(c.env, '[WS] wsConnect response status:', containerResponse.status);
     
     // Get the container-side WebSocket
     const containerWs = containerResponse.webSocket;
     if (!containerWs) {
-      console.error('[WS] No WebSocket in container response - falling back to direct proxy');
+      if (c.env.DEBUG_MODE === 'true') {
+        console.error('[WS] No WebSocket in container response - falling back to direct proxy');
+      }
       return containerResponse;
     }
     
-    console.log('[WS] Got container WebSocket, setting up interception');
+    debugLog(c.env, '[WS] Got container WebSocket, setting up interception');
     
     // Create a WebSocket pair for the client
     const [clientWs, serverWs] = Object.values(new WebSocketPair());
@@ -288,86 +306,90 @@ app.all('*', async (c) => {
     serverWs.accept();
     containerWs.accept();
     
-    console.log('[WS] Both WebSockets accepted');
-    console.log('[WS] containerWs.readyState:', containerWs.readyState);
-    console.log('[WS] serverWs.readyState:', serverWs.readyState);
+    debugLog(c.env, '[WS] Both WebSockets accepted');
+    debugLog(c.env, '[WS] containerWs.readyState:', containerWs.readyState);
+    debugLog(c.env, '[WS] serverWs.readyState:', serverWs.readyState);
     
     // Relay messages from client to container
     serverWs.addEventListener('message', (event) => {
-      console.log('[WS] Client -> Container:', typeof event.data, typeof event.data === 'string' ? event.data.slice(0, 200) : '(binary)');
+      debugLog(c.env, '[WS] Client -> Container:', typeof event.data, typeof event.data === 'string' ? event.data.slice(0, 200) : '(binary)');
       if (containerWs.readyState === WebSocket.OPEN) {
         containerWs.send(event.data);
       } else {
-        console.log('[WS] Container not open, readyState:', containerWs.readyState);
+        debugLog(c.env, '[WS] Container not open, readyState:', containerWs.readyState);
       }
     });
     
     // Relay messages from container to client, with error transformation
     containerWs.addEventListener('message', (event) => {
-      console.log('[WS] Container -> Client (raw):', typeof event.data, typeof event.data === 'string' ? event.data.slice(0, 500) : '(binary)');
+      debugLog(c.env, '[WS] Container -> Client (raw):', typeof event.data, typeof event.data === 'string' ? event.data.slice(0, 500) : '(binary)');
       let data = event.data;
       
       // Try to intercept and transform error messages
       if (typeof data === 'string') {
         try {
           const parsed = JSON.parse(data);
-          console.log('[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
+          debugLog(c.env, '[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
           if (parsed.error?.message) {
-            console.log('[WS] Original error.message:', parsed.error.message);
+            debugLog(c.env, '[WS] Original error.message:', parsed.error.message);
             parsed.error.message = transformErrorMessage(parsed.error.message, url.host);
-            console.log('[WS] Transformed error.message:', parsed.error.message);
+            debugLog(c.env, '[WS] Transformed error.message:', parsed.error.message);
             data = JSON.stringify(parsed);
           }
         } catch (e) {
-          console.log('[WS] Not JSON or parse error:', e);
+          debugLog(c.env, '[WS] Not JSON or parse error:', e);
         }
       }
       
       if (serverWs.readyState === WebSocket.OPEN) {
         serverWs.send(data);
       } else {
-        console.log('[WS] Server not open, readyState:', serverWs.readyState);
+        debugLog(c.env, '[WS] Server not open, readyState:', serverWs.readyState);
       }
     });
     
     // Handle close events
     serverWs.addEventListener('close', (event) => {
-      console.log('[WS] Client closed:', event.code, event.reason);
+      debugLog(c.env, '[WS] Client closed:', event.code, event.reason);
       containerWs.close(event.code, event.reason);
     });
     
     containerWs.addEventListener('close', (event) => {
-      console.log('[WS] Container closed:', event.code, event.reason);
+      debugLog(c.env, '[WS] Container closed:', event.code, event.reason);
       // Transform the close reason (truncate to 123 bytes max for WebSocket spec)
       let reason = transformErrorMessage(event.reason, url.host);
       if (reason.length > 123) {
         reason = reason.slice(0, 120) + '...';
       }
-      console.log('[WS] Transformed close reason:', reason);
+      debugLog(c.env, '[WS] Transformed close reason:', reason);
       serverWs.close(event.code, reason);
     });
     
     // Handle errors
     serverWs.addEventListener('error', (event) => {
-      console.error('[WS] Client error:', event);
+      if (c.env.DEBUG_MODE === 'true') {
+        console.error('[WS] Client error:', event);
+      }
       containerWs.close(1011, 'Client error');
     });
     
     containerWs.addEventListener('error', (event) => {
-      console.error('[WS] Container error:', event);
+      if (c.env.DEBUG_MODE === 'true') {
+        console.error('[WS] Container error:', event);
+      }
       serverWs.close(1011, 'Container error');
     });
     
-    console.log('[WS] Returning intercepted WebSocket response');
+    debugLog(c.env, '[WS] Returning intercepted WebSocket response');
     return new Response(null, {
       status: 101,
       webSocket: clientWs,
     });
   }
 
-  console.log('[HTTP] Proxying:', url.pathname + url.search);
+  debugLog(c.env, '[HTTP] Proxying:', url.pathname + url.search);
   const httpResponse = await sandbox.containerFetch(request, MOLTBOT_PORT);
-  console.log('[HTTP] Response status:', httpResponse.status);
+  debugLog(c.env, '[HTTP] Response status:', httpResponse.status);
   
   // Add debug header to verify worker handled the request
   const newHeaders = new Headers(httpResponse.headers);
@@ -393,13 +415,15 @@ async function scheduled(
   const options = buildSandboxOptions(env);
   const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-  console.log('[cron] Starting backup sync to R2...');
+  debugLog(env, '[cron] Starting backup sync to R2...');
   const result = await syncToR2(sandbox, env);
   
   if (result.success) {
-    console.log('[cron] Backup sync completed successfully at', result.lastSync);
+    debugLog(env, '[cron] Backup sync completed successfully at', result.lastSync);
   } else {
-    console.error('[cron] Backup sync failed:', result.error, result.details || '');
+    if (env.DEBUG_MODE === 'true') {
+      console.error('[cron] Backup sync failed:', result.error, result.details || '');
+    }
   }
 }
 

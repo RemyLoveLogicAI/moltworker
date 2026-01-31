@@ -1,0 +1,17 @@
+# Gitleaks ignore file
+# This file is used to suppress false positive secret detections
+
+# CI/CD documentation contains example secret names and patterns
+# These are documentation references, not actual secrets
+CI_CD.md:*:generic-api-key
+CI_CD.md:*:generic-api-token
+CI_CD.md:*:secret
+
+# README contains documentation about secret configuration
+# These are instructions, not actual secrets
+README.md:*:generic-api-key
+README.md:*:generic-api-token
+
+# Workflow files may reference secret names in comments or examples
+# Actual secrets are referenced via ${{ secrets.* }} which are safe
+.github/workflows/*.yml:*:generic-api-key

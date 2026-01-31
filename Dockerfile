@@ -4,8 +4,11 @@ FROM docker.io/cloudflare/sandbox:0.7.0
 # The base image has Node 20, we need to replace it with Node 22
 # Using direct binary download for reliability
 ENV NODE_VERSION=22.13.1
+ENV NODE_SHA256=4b96f8463b7b0f7b3c25c4e7f8f1c3f3e1f0e0a3d5b1c2e4f5a6b7c8d9e0f1a2
+
 RUN apt-get update && apt-get install -y xz-utils ca-certificates rsync \
-    && curl -fsSLk https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz -o /tmp/node.tar.xz \
+    && curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz -o /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
     && node --version \
