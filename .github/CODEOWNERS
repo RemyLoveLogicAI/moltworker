@@ -1,0 +1,21 @@
+# CODEOWNERS file
+# This file controls who is auto-requested for reviews in pull requests.
+
+# Global owners - will be auto-requested for all changes
+* @Remylovelogicai
+
+# Directory-based owners
+# Uncomment and modify as needed:
+# /src/auth/ @username1
+# /src/gateway/ @username2
+# /src/client/ @username3
+
+# File-based owners
+# Uncomment and modify as needed:
+# /package.json @username1
+# /wrangler.jsonc @username1
+
+# File type owners
+# *.md @username1
+# *.ts @username1
+# *.tsx @username2
