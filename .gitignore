@@ -14,6 +14,8 @@ build-info.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
 # Editor
 .idea/
@@ -36,3 +38,80 @@ Thumbs.db
 
 # Docker build artifacts
 *.tar
+
+# ============================================================
+# SECURITY: Prevent accidental secret commits
+# ============================================================
+
+# Credential files
+*credentials*
+*secrets*
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+
+# Common secret file names
+.secret
+.secrets
+secret.txt
+secrets.txt
+secrets.json
+credentials.json
+auth.json
+
+# API key files
+*api-key*
+*apikey*
+*api_key*
+*.token
+.token
+
+# Config files that may contain secrets
+config.local.*
+config.production.*
+config.staging.*
+config.development.*
+local.config.*
+*.local.json
+*.secret.json
+
+# Backup files that may contain sensitive data
+*.backup
+*.bak
+*~
+.backup/
+backups/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+.temp/
+
+# SSH keys
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*.ppk
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Cloud provider credentials
+.aws/
+.azure/
+.gcloud/
+
+# Kubernetes secrets
+*secret*.yaml
+*secret*.yml
+
+# Generated config files from templates
+clawdbot.json
+moltbot.json
+!moltbot.json.template
