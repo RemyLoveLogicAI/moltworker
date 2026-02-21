@@ -111,13 +111,13 @@ const app = new Hono<AppEnv>();
 // MIDDLEWARE: Applied to ALL routes
 // =============================================================================
 
-// Middleware: Log every request
+// Middleware: Log every request (sanitized for security)
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url);
-  console.log(`[REQ] ${c.req.method} ${url.pathname}${url.search}`);
-  console.log(`[REQ] Has ANTHROPIC_API_KEY: ${!!c.env.ANTHROPIC_API_KEY}`);
-  console.log(`[REQ] DEV_MODE: ${c.env.DEV_MODE}`);
-  console.log(`[REQ] DEBUG_ROUTES: ${c.env.DEBUG_ROUTES}`);
+  // SECURITY: Only log non-sensitive request information
+  console.log(`[REQ] ${c.req.method} ${url.pathname}`);
+  // SECURITY: Don't log query params as they may contain tokens
+  // SECURITY: Don't log API key existence as it aids reconnaissance
   await next();
 });
 
@@ -265,8 +265,6 @@ app.all('*', async (c) => {
   // Proxy to Moltbot with WebSocket message interception
   if (isWebSocketRequest) {
     console.log('[WS] Proxying WebSocket connection to Moltbot');
-    console.log('[WS] URL:', request.url);
-    console.log('[WS] Search params:', url.search);
     
     // Get WebSocket connection to the container
     const containerResponse = await sandbox.wsConnect(request, MOLTBOT_PORT);
@@ -289,12 +287,11 @@ app.all('*', async (c) => {
     containerWs.accept();
     
     console.log('[WS] Both WebSockets accepted');
-    console.log('[WS] containerWs.readyState:', containerWs.readyState);
-    console.log('[WS] serverWs.readyState:', serverWs.readyState);
     
     // Relay messages from client to container
     serverWs.addEventListener('message', (event) => {
-      console.log('[WS] Client -> Container:', typeof event.data, typeof event.data === 'string' ? event.data.slice(0, 200) : '(binary)');
+      // SECURITY: Don't log potentially sensitive message content
+      console.log('[WS] Client -> Container: message received');
       if (containerWs.readyState === WebSocket.OPEN) {
         containerWs.send(event.data);
       } else {
@@ -304,22 +301,19 @@ app.all('*', async (c) => {
     
     // Relay messages from container to client, with error transformation
     containerWs.addEventListener('message', (event) => {
-      console.log('[WS] Container -> Client (raw):', typeof event.data, typeof event.data === 'string' ? event.data.slice(0, 500) : '(binary)');
+      console.log('[WS] Container -> Client: message received');
       let data = event.data;
       
       // Try to intercept and transform error messages
       if (typeof data === 'string') {
         try {
           const parsed = JSON.parse(data);
-          console.log('[WS] Parsed JSON, has error.message:', !!parsed.error?.message);
           if (parsed.error?.message) {
-            console.log('[WS] Original error.message:', parsed.error.message);
             parsed.error.message = transformErrorMessage(parsed.error.message, url.host);
-            console.log('[WS] Transformed error.message:', parsed.error.message);
             data = JSON.stringify(parsed);
           }
         } catch (e) {
-          console.log('[WS] Not JSON or parse error:', e);
+          // Not JSON, ignore
         }
       }
       
@@ -343,7 +337,6 @@ app.all('*', async (c) => {
       if (reason.length > 123) {
         reason = reason.slice(0, 120) + '...';
       }
-      console.log('[WS] Transformed close reason:', reason);
       serverWs.close(event.code, reason);
     });
     
@@ -358,14 +351,13 @@ app.all('*', async (c) => {
       serverWs.close(1011, 'Container error');
     });
     
-    console.log('[WS] Returning intercepted WebSocket response');
     return new Response(null, {
       status: 101,
       webSocket: clientWs,
     });
   }
 
-  console.log('[HTTP] Proxying:', url.pathname + url.search);
+  console.log('[HTTP] Proxying:', url.pathname);
   const httpResponse = await sandbox.containerFetch(request, MOLTBOT_PORT);
   console.log('[HTTP] Response status:', httpResponse.status);
   
