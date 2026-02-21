@@ -174,6 +174,7 @@ config.gateway.trustedProxies = ['10.1.0.0'];
 if (process.env.CLAWDBOT_GATEWAY_TOKEN) {
     config.gateway.auth = config.gateway.auth || {};
     config.gateway.auth.token = process.env.CLAWDBOT_GATEWAY_TOKEN;
+    console.log('Configured gateway token authentication');
 }
 
 // Allow insecure auth for dev mode
@@ -189,6 +190,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     config.channels.telegram.enabled = true;
     config.channels.telegram.dm = config.channels.telegram.dm || {};
     config.channels.telegram.dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
+    console.log('Configured Telegram channel');
 }
 
 // Discord configuration
@@ -198,6 +200,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
     config.channels.discord.enabled = true;
     config.channels.discord.dm = config.channels.discord.dm || {};
     config.channels.discord.dm.policy = process.env.DISCORD_DM_POLICY || 'pairing';
+    console.log('Configured Discord channel');
 }
 
 // Slack configuration
@@ -206,6 +209,7 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     config.channels.slack.botToken = process.env.SLACK_BOT_TOKEN;
     config.channels.slack.appToken = process.env.SLACK_APP_TOKEN;
     config.channels.slack.enabled = true;
+    console.log('Configured Slack channel');
 }
 
 // ============================================================
@@ -291,6 +295,7 @@ if (process.env.OPENROUTER_API_KEY) {
             { id: 'anthropic/claude-sonnet-4-20250514', name: 'Claude Sonnet 4', contextWindow: 200000 },
         ]
     };
+    console.log('Configured OpenRouter provider');
 }
 
 // Google Gemini
@@ -302,6 +307,7 @@ if (process.env.GEMINI_API_KEY) {
             { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash', contextWindow: 1048576 },
         ]
     };
+    console.log('Configured Gemini provider');
 }
 
 // Mistral
@@ -313,6 +319,7 @@ if (process.env.MISTRAL_API_KEY) {
             { id: 'mistral-small-2501', name: 'Mistral Small', contextWindow: 131072 },
         ]
     };
+    console.log('Configured Mistral provider');
 }
 
 // Fireworks AI
@@ -324,6 +331,7 @@ if (process.env.FIREWORKS_API_KEY) {
             { id: 'accounts/fireworks/models/llama-v3p1-405b-instruct', name: 'Llama 3.1 405B', contextWindow: 131072 },
         ]
     };
+    console.log('Configured Fireworks provider');
 }
 
 // xAI (Grok)
@@ -335,6 +343,7 @@ if (process.env.X1_API_KEY) {
             { id: 'grok-3-beta', name: 'Grok 3 Beta', contextWindow: 131072 },
         ]
     };
+    console.log('Configured xAI provider');
 }
 
 // Deepshot Kimi2
@@ -346,6 +355,7 @@ if (process.env.DEEPSHOT_KIMI2_API_KEY) {
             { id: 'kimi2-thinking', name: 'Kimi2 Thinking', contextWindow: 200000 },
         ]
     };
+    console.log('Configured Deepshot provider');
 }
 
 // MiniMax
@@ -357,6 +367,7 @@ if (process.env.MINIMAX_API_KEY) {
             { id: 'abab6.5s-chat', name: 'MiniMax ABAB 6.5s', contextWindow: 16384 },
         ]
     };
+    console.log('Configured MiniMax provider');
 }
 
 // ============================================================
@@ -620,7 +631,9 @@ if (isOpenAI) {
 // Write updated config
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration updated successfully');
-console.log('Config:', JSON.stringify(config, null, 2));
+// SECURITY: Do not log the full config as it contains API keys
+console.log('Providers configured:', Object.keys(config.models?.providers || {}).join(', '));
+console.log('Channels configured:', Object.keys(config.channels || {}).filter(k => config.channels[k]?.enabled).join(', '));
 EOFNODE
 
 # ============================================================
@@ -637,9 +650,12 @@ rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
 BIND_MODE="lan"
 echo "Dev mode: ${CLAWDBOT_DEV_MODE:-false}, Bind mode: $BIND_MODE"
 
+# SECURITY: Pass token via environment variable, not CLI argument
+# This prevents the token from appearing in process listings (ps aux)
 if [ -n "$CLAWDBOT_GATEWAY_TOKEN" ]; then
-    echo "Starting gateway with token auth..."
-    exec clawdbot gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE" --token "$CLAWDBOT_GATEWAY_TOKEN"
+    echo "Starting gateway with token auth (via environment)..."
+    # The token is already in the config file, no need to pass it as CLI arg
+    exec clawdbot gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE"
 else
     echo "Starting gateway with device pairing (no token)..."
     exec clawdbot gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE"
