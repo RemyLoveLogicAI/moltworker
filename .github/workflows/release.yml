@@ -211,6 +211,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -223,8 +224,8 @@ jobs:
 
       - name: Configure Git User
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
 
       - name: Determine version bump type
         id: version
@@ -239,11 +240,87 @@ jobs:
           else
             echo "type=patch" >> $GITHUB_OUTPUT
           fi
+          
+          echo "Detected bump type: ${{ steps.version.outputs.type }}"
+
+      - name: Get current version
+        id: current_version
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION"
 
       - name: Bump version and create tag
+        id: bump
         run: |
-          npm version ${{ steps.version.outputs.type }} -m "chore: bump version to %s"
-          git push origin main --follow-tags
+          # Store the version before bump
+          BEFORE_VERSION=$(node -p "require('./package.json').version")
+          echo "Version before bump: $BEFORE_VERSION"
+          
+          # Bump version
+          npm version ${{ steps.version.outputs.type }} -m "chore: bump version to %s" --no-git-tag-version
+          
+          # Get the new version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+          
+          # Check if version actually changed
+          if [ "$BEFORE_VERSION" = "$NEW_VERSION" ]; then
+            echo "Version did not change, skipping commit"
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit version bump
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          git add package.json package-lock.json
+          git commit -m "chore: bump version to v${{ steps.bump.outputs.new_version }}"
+          
+          # Create annotated tag
+          git tag -a "v${{ steps.bump.outputs.new_version }}" -m "Release v${{ steps.bump.outputs.new_version }}"
+
+      - name: Push changes
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          # Push with retry logic
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if git push origin main --follow-tags; then
+              echo "Successfully pushed changes and tags"
+              exit 0
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "Push failed. Retry $RETRY_COUNT of $MAX_RETRIES"
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                sleep 5
+                git pull --rebase origin main
+                git tag -fa "v${{ steps.bump.outputs.new_version }}" -m "Release v${{ steps.bump.outputs.new_version }}"
+              fi
+            fi
+          done
+          
+          echo "Failed to push after $MAX_RETRIES attempts"
+          exit 1
+
+      - name: Create version bump summary
+        if: always()
+        run: |
+          echo "## Version Bump Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR**: #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Bump Type**: ${{ steps.version.outputs.type }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current Version**: ${{ steps.current_version.outputs.current }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.bump.outputs.changed }}" = "true" ]; then
+            echo "- **New Version**: v${{ steps.bump.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status**: ✅ Version bumped and pushed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status**: ℹ️ Version unchanged, skipped push" >> $GITHUB_STEP_SUMMARY
+          fi
 
   # Publish to NPM (if applicable)
   npm-publish:
@@ -274,8 +351,10 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        continue-on-error: true
 
       - name: Notify NPM publish
+        if: always()
         uses: 8398a7/action-slack@v3
         with:
           status: ${{ job.status }}
@@ -283,6 +362,7 @@ jobs:
           text: '📦 Published to NPM: ${{ github.ref_name }}'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
 
   # Update Documentation
   update-docs:
@@ -298,8 +378,10 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/moltbot-docs
           token: ${{ secrets.DOCS_TOKEN }}
+        continue-on-error: true
 
       - name: Update version info
+        if: success()
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           
@@ -312,9 +394,11 @@ jobs:
           echo "" >> releases.md
 
       - name: Commit and push documentation updates
+        if: success()
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           git add .
           git commit -m "docs: update for release ${{ github.ref_name }}"
           git push
+        continue-on-error: true
