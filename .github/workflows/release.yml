@@ -299,6 +299,7 @@ jobs:
               if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
                 sleep 5
                 git pull --rebase origin main
+                git tag -fa "v${{ steps.bump.outputs.new_version }}" -m "Release v${{ steps.bump.outputs.new_version }}"
               fi
             fi
           done
